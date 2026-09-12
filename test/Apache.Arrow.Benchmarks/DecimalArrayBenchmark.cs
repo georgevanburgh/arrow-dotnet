@@ -31,6 +31,11 @@ namespace Apache.Arrow.Benchmarks
         private Decimal256Array _decimal256LowScale;
         private Decimal256Array _decimal256HighScale;
 
+        private decimal[] _lowScaleValues;
+        private decimal[] _highScaleValues;
+        private Decimal128Array.Builder _decimal128LowScaleBuilder;
+        private Decimal128Array.Builder _decimal128HighScaleBuilder;
+
         [GlobalSetup]
         public void GlobalSetup()
         {
@@ -40,6 +45,17 @@ namespace Apache.Arrow.Benchmarks
             _decimal128HighScale = BuildDecimal128Array(new Decimal128Type(38, 20), random);
             _decimal256LowScale = BuildDecimal256Array(new Decimal256Type(14, 4), random);
             _decimal256HighScale = BuildDecimal256Array(new Decimal256Type(76, 38), random);
+
+            _lowScaleValues = new decimal[Count];
+            _highScaleValues = new decimal[Count];
+            for (int i = 0; i < Count; i++)
+            {
+                _lowScaleValues[i] = (decimal)Math.Round(random.NextDouble() * 10000, 4);
+                _highScaleValues[i] = (decimal)Math.Round(random.NextDouble() * 10000, 10);
+            }
+
+            _decimal128LowScaleBuilder = new Decimal128Array.Builder(new Decimal128Type(14, 4)).Reserve(Count);
+            _decimal128HighScaleBuilder = new Decimal128Array.Builder(new Decimal128Type(38, 20)).Reserve(Count);
         }
 
         private Decimal128Array BuildDecimal128Array(Decimal128Type type, Random random)
@@ -126,6 +142,28 @@ namespace Apache.Arrow.Benchmarks
                 last = _decimal256HighScale.GetString(i);
             }
             return last;
+        }
+
+        [Benchmark]
+        public Decimal128Array.Builder Decimal128_AppendDecimal_LowScale()
+        {
+            Decimal128Array.Builder builder = _decimal128LowScaleBuilder.Resize(0);
+            for (int i = 0; i < _lowScaleValues.Length; i++)
+            {
+                builder.Append(_lowScaleValues[i]);
+            }
+            return builder;
+        }
+
+        [Benchmark]
+        public Decimal128Array.Builder Decimal128_AppendDecimal_HighScale()
+        {
+            Decimal128Array.Builder builder = _decimal128HighScaleBuilder.Resize(0);
+            for (int i = 0; i < _highScaleValues.Length; i++)
+            {
+                builder.Append(_highScaleValues[i]);
+            }
+            return builder;
         }
     }
 }

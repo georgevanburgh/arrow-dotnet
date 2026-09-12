@@ -44,6 +44,10 @@ namespace Apache.Arrow
 
         private static readonly UInt128[] s_uint128PowersOfTen = ComputeUInt128Powers();
 
+        // s_uint128MaxDividedByPowersOfTen[i] is the largest value that can be multiplied by 10^i without
+        // overflowing a UInt128, so that scaling can be range checked without dividing.
+        private static readonly UInt128[] s_uint128MaxDividedByPowersOfTen = ComputeUInt128MaxDividedByPowers();
+
         private static UInt128[] ComputeUInt128Powers()
         {
             var powers = new UInt128[39]; // 10^0 through 10^38
@@ -51,6 +55,34 @@ namespace Apache.Arrow
             for (int i = 1; i < powers.Length; i++)
                 powers[i] = powers[i - 1] * 10;
             return powers;
+        }
+
+        private static UInt128[] ComputeUInt128MaxDividedByPowers()
+        {
+            UInt128[] powers = s_uint128PowersOfTen;
+            var limits = new UInt128[powers.Length];
+            for (int i = 0; i < limits.Length; i++)
+                limits[i] = UInt128.MaxValue / powers[i];
+            return limits;
+        }
+
+        private static bool TryMultiplyByPowerOfTen(UInt128 value, int power, out UInt128 result)
+        {
+            if (power <= 0 || value == UInt128.Zero)
+            {
+                result = value;
+                return true;
+            }
+
+            UInt128[] powers = s_uint128PowersOfTen;
+            if (power >= powers.Length || value > s_uint128MaxDividedByPowersOfTen[power])
+            {
+                result = default;
+                return false;
+            }
+
+            result = value * powers[power];
+            return true;
         }
 #endif
 
@@ -352,6 +384,34 @@ namespace Apache.Arrow
             return result;
         }
 
+#if NET7_0_OR_GREATER
+        /// <summary>
+        /// Writes a decimal to a 16 byte buffer using 128-bit arithmetic, returning false when padding the
+        /// value out to <paramref name="scale"/> needs more than 128 bits and only BigInteger will do.
+        /// </summary>
+        private static bool TryWriteDecimal128(decimal value, ReadOnlySpan<int> decimalBits, int decScale, int precision, int scale, Span<byte> bytes)
+        {
+            UInt128 mantissa = new UInt128((uint)decimalBits[2], ((ulong)(uint)decimalBits[1] << 32) | (uint)decimalBits[0]);
+
+            // validate precision, which as below is measured against the decimal's own digits rather than
+            // against the value once it has been padded out to the array's scale
+            UInt128[] powers = s_uint128PowersOfTen;
+            if ((uint)precision < (uint)powers.Length && mantissa >= powers[precision])
+                throw new OverflowException($"Decimal precision cannot be greater than that in the Arrow vector: {value} has precision > {precision}");
+
+            // pad with trailing zeros
+            if (!TryMultiplyByPowerOfTen(mantissa, scale - decScale, out UInt128 unscaled) ||
+                unscaled > (UInt128)Int128.MaxValue)
+            {
+                return false;
+            }
+
+            bool negative = decimalBits[3] < 0;
+            BinaryPrimitives.WriteInt128LittleEndian(bytes, negative ? -(Int128)unscaled : (Int128)unscaled);
+            return true;
+        }
+#endif
+
         internal static void GetBytes(decimal value, int precision, int scale, int byteWidth, Span<byte> bytes)
         {
             // create BigInteger from decimal
@@ -365,6 +425,21 @@ namespace Apache.Arrow
 #endif
 
             int decScale = (decimalBits[3] >> 16) & 0x7F;
+
+            // validate scale
+            if (decScale > scale)
+                throw new OverflowException($"Decimal scale cannot be greater than that in the Arrow vector: {decScale} != {scale}");
+
+#if NET7_0_OR_GREATER
+            // A decimal's mantissa is 96 bits, so for decimal128 the whole conversion fits in 128-bit
+            // arithmetic unless padding the scale overflows it, which only BigInteger can represent.
+            if (byteWidth == 16 && bytes.Length == byteWidth &&
+                TryWriteDecimal128(value, decimalBits, decScale, precision, scale, bytes))
+            {
+                return;
+            }
+#endif
+
 #if NETCOREAPP
             Span<byte> bigIntBytes = stackalloc byte[13];
 
@@ -400,10 +475,7 @@ namespace Apache.Arrow
                 bigInt = -bigInt;
             }
 
-            // validate precision and scale
-            if (decScale > scale)
-                throw new OverflowException($"Decimal scale cannot be greater than that in the Arrow vector: {decScale} != {scale}");
-
+            // validate precision
             if (bigInt >= BigInteger.Pow(10, precision))
                 throw new OverflowException($"Decimal precision cannot be greater than that in the Arrow vector: {value} has precision > {precision}");
 

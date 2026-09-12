@@ -15,6 +15,7 @@
 
 using System;
 using System.Data.SqlTypes;
+using System.Globalization;
 using Apache.Arrow.Types;
 using Xunit;
 
@@ -199,6 +200,106 @@ namespace Apache.Arrow.Tests
             {
                 byte[] bytes = new byte[byteWidth];
                 Assert.Throws(exceptionType, () => DecimalUtility.GetBytes(s, precision, scale, byteWidth, bytes));
+            }
+        }
+
+        /// <summary>
+        /// Covers writing a <see cref="decimal"/> to a decimal128 buffer, in particular the boundaries where
+        /// the value stops fitting in 64 or 128 bits.
+        /// </summary>
+        public class Decimal128Writing
+        {
+            private const int ByteWidth = 16;
+
+            public static readonly TheoryData<int, int, string> Values = new TheoryData<int, int, string>
+            {
+                { 38, 0, "0" },
+                { 38, 0, "1" },
+                { 38, 0, "-1" },
+                { 38, 0, "9223372036854775807" },   // long.MaxValue
+                { 38, 0, "9223372036854775808" },
+                { 38, 0, "-9223372036854775808" },  // long.MinValue
+                { 38, 0, "-9223372036854775809" },
+                { 38, 0, "18446744073709551616" },  // 2^64
+                { 38, 0, "79228162514264337593543950335" },   // decimal.MaxValue
+                { 38, 0, "-79228162514264337593543950335" },  // decimal.MinValue
+                { 38, 28, "7.9228162514264337593543950335" },
+                { 38, 28, "-7.9228162514264337593543950335" },
+                { 38, 10, "123456789.0123456789" },
+                { 20, 4, "1234567890123456.7890" },
+                { 20, 4, "-1234567890123456.7890" },
+                { 38, 20, "1.5" },                  // padded out by 19 digits
+                { 38, 37, "1.5" },                  // padded out to the widest scale a decimal128 holds
+            };
+
+            [Theory]
+            [MemberData(nameof(Values))]
+            public void RoundTripsThroughDecimal(int precision, int scale, string text)
+            {
+                decimal value = decimal.Parse(text, NumberStyles.Number, CultureInfo.InvariantCulture);
+
+                byte[] bytes = new byte[ByteWidth];
+                DecimalUtility.GetBytes(value, precision, scale, ByteWidth, bytes);
+
+                Assert.Equal(value, DecimalUtility.GetDecimal(new ArrowBuffer(bytes), 0, scale, ByteWidth));
+            }
+
+            /// <summary>
+            /// decimal256 is still written through BigInteger, so its low 16 bytes are an independent check
+            /// on what the decimal128 conversion produces.
+            /// </summary>
+            [Theory]
+            [MemberData(nameof(Values))]
+            public void MatchesTheWiderConversion(int precision, int scale, string text)
+            {
+                decimal value = decimal.Parse(text, NumberStyles.Number, CultureInfo.InvariantCulture);
+
+                byte[] narrow = new byte[ByteWidth];
+                DecimalUtility.GetBytes(value, precision, scale, ByteWidth, narrow);
+
+                byte[] wide = new byte[32];
+                DecimalUtility.GetBytes(value, precision, scale, 32, wide);
+
+                Assert.Equal(narrow, wide.AsSpan(0, ByteWidth).ToArray());
+                Assert.Equal(value < 0 ? (byte)0xFF : (byte)0, wide[31]);
+            }
+
+            [Fact]
+            public void PaddingBeyondOneHundredAndTwentyEightBitsThrows()
+            {
+                // decimal.MaxValue padded out by another 20 digits needs 49 digits, far more than the
+                // 39 a decimal128 can hold.
+                byte[] bytes = new byte[ByteWidth];
+                Assert.Throws<OverflowException>(
+                    () => DecimalUtility.GetBytes(decimal.MaxValue, 38, 20, ByteWidth, bytes));
+            }
+
+            [Fact]
+            public void PrecisionIsCheckedForNegativeValues()
+            {
+                byte[] bytes = new byte[ByteWidth];
+                Assert.Throws<OverflowException>(() => DecimalUtility.GetBytes(100.123m, 5, 3, ByteWidth, bytes));
+                Assert.Throws<OverflowException>(() => DecimalUtility.GetBytes(-100.123m, 5, 3, ByteWidth, bytes));
+            }
+
+            [Fact]
+            public void PrecisionIsMeasuredBeforePadding()
+            {
+                // 100.123 has six significant digits, so it fits a precision of six even though writing it
+                // at a scale of four produces the seven digit value 1001230.
+                byte[] bytes = new byte[ByteWidth];
+                DecimalUtility.GetBytes(100.123m, 6, 4, ByteWidth, bytes);
+                Assert.Equal(100.123m, DecimalUtility.GetDecimal(new ArrowBuffer(bytes), 0, 4, ByteWidth));
+
+                DecimalUtility.GetBytes(-100.123m, 6, 4, ByteWidth, bytes);
+                Assert.Equal(-100.123m, DecimalUtility.GetDecimal(new ArrowBuffer(bytes), 0, 4, ByteWidth));
+            }
+
+            [Fact]
+            public void ScaleSmallerThanTheValuesThrows()
+            {
+                byte[] bytes = new byte[ByteWidth];
+                Assert.Throws<OverflowException>(() => DecimalUtility.GetBytes(100.123m, 10, 2, ByteWidth, bytes));
             }
         }
     }
