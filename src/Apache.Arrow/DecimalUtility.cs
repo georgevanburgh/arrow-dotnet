@@ -386,10 +386,11 @@ namespace Apache.Arrow
 
 #if NET7_0_OR_GREATER
         /// <summary>
-        /// Writes a decimal to a 16 byte buffer using 128-bit arithmetic, returning false when padding the
-        /// value out to <paramref name="scale"/> needs more than 128 bits and only BigInteger will do.
+        /// Writes a decimal to the value buffer using 128-bit arithmetic, returning false when the value
+        /// does not fit <paramref name="byteWidth"/> or when padding it out to <paramref name="scale"/>
+        /// needs more than 128 bits. Both are left to BigInteger, which reports them as it always has.
         /// </summary>
-        private static bool TryWriteDecimal128(decimal value, ReadOnlySpan<int> decimalBits, int decScale, int precision, int scale, Span<byte> bytes)
+        private static bool TryWriteDecimal(decimal value, ReadOnlySpan<int> decimalBits, int decScale, int precision, int scale, int byteWidth, Span<byte> bytes)
         {
             UInt128 mantissa = new UInt128((uint)decimalBits[2], ((ulong)(uint)decimalBits[1] << 32) | (uint)decimalBits[0]);
 
@@ -406,9 +407,34 @@ namespace Apache.Arrow
                 return false;
             }
 
-            bool negative = decimalBits[3] < 0;
-            BinaryPrimitives.WriteInt128LittleEndian(bytes, negative ? -(Int128)unscaled : (Int128)unscaled);
-            return true;
+            Int128 signed = decimalBits[3] < 0 ? -(Int128)unscaled : (Int128)unscaled;
+
+            switch (byteWidth)
+            {
+                case 4:
+                    if (signed < int.MinValue || signed > int.MaxValue)
+                        return false;
+                    BinaryPrimitives.WriteInt32LittleEndian(bytes, (int)signed);
+                    return true;
+
+                case 8:
+                    if (signed < long.MinValue || signed > long.MaxValue)
+                        return false;
+                    BinaryPrimitives.WriteInt64LittleEndian(bytes, (long)signed);
+                    return true;
+
+                case 16:
+                    BinaryPrimitives.WriteInt128LittleEndian(bytes, signed);
+                    return true;
+
+                case 32:
+                    BinaryPrimitives.WriteInt128LittleEndian(bytes, signed);
+                    bytes.Slice(16).Fill(Int128.IsNegative(signed) ? (byte)0xFF : (byte)0);
+                    return true;
+
+                default:
+                    return false;
+            }
         }
 #endif
 
@@ -431,10 +457,10 @@ namespace Apache.Arrow
                 throw new OverflowException($"Decimal scale cannot be greater than that in the Arrow vector: {decScale} != {scale}");
 
 #if NET7_0_OR_GREATER
-            // A decimal's mantissa is 96 bits, so for decimal128 the whole conversion fits in 128-bit
-            // arithmetic unless padding the scale overflows it, which only BigInteger can represent.
-            if (byteWidth == 16 && bytes.Length == byteWidth &&
-                TryWriteDecimal128(value, decimalBits, decScale, precision, scale, bytes))
+            // A decimal's mantissa is 96 bits, so the whole conversion fits in 128-bit arithmetic unless
+            // padding the scale overflows it, which only BigInteger can represent.
+            if (bytes.Length == byteWidth &&
+                TryWriteDecimal(value, decimalBits, decScale, precision, scale, byteWidth, bytes))
             {
                 return;
             }

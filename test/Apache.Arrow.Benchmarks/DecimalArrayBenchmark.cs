@@ -33,8 +33,12 @@ namespace Apache.Arrow.Benchmarks
 
         private decimal[] _lowScaleValues;
         private decimal[] _highScaleValues;
+        private Decimal32Array.Builder _decimal32Builder;
+        private Decimal64Array.Builder _decimal64Builder;
         private Decimal128Array.Builder _decimal128LowScaleBuilder;
         private Decimal128Array.Builder _decimal128HighScaleBuilder;
+        private Decimal256Array.Builder _decimal256LowScaleBuilder;
+        private Decimal256Array.Builder _decimal256HighScaleBuilder;
 
         [GlobalSetup]
         public void GlobalSetup()
@@ -54,8 +58,12 @@ namespace Apache.Arrow.Benchmarks
                 _highScaleValues[i] = (decimal)Math.Round(random.NextDouble() * 10000, 10);
             }
 
+            _decimal32Builder = new Decimal32Array.Builder(new Decimal32Type(9, 4)).Reserve(Count);
+            _decimal64Builder = new Decimal64Array.Builder(new Decimal64Type(18, 4)).Reserve(Count);
             _decimal128LowScaleBuilder = new Decimal128Array.Builder(new Decimal128Type(14, 4)).Reserve(Count);
             _decimal128HighScaleBuilder = new Decimal128Array.Builder(new Decimal128Type(38, 20)).Reserve(Count);
+            _decimal256LowScaleBuilder = new Decimal256Array.Builder(new Decimal256Type(14, 4)).Reserve(Count);
+            _decimal256HighScaleBuilder = new Decimal256Array.Builder(new Decimal256Type(76, 38)).Reserve(Count);
         }
 
         private Decimal128Array BuildDecimal128Array(Decimal128Type type, Random random)
@@ -142,6 +150,50 @@ namespace Apache.Arrow.Benchmarks
                 last = _decimal256HighScale.GetString(i);
             }
             return last;
+        }
+
+        [Benchmark]
+        public Decimal32Array.Builder Decimal32_AppendDecimal()
+        {
+            Decimal32Array.Builder builder = _decimal32Builder.Resize(0);
+            for (int i = 0; i < _lowScaleValues.Length; i++)
+            {
+                builder.Append(_lowScaleValues[i]);
+            }
+            return builder;
+        }
+
+        [Benchmark]
+        public Decimal64Array.Builder Decimal64_AppendDecimal()
+        {
+            Decimal64Array.Builder builder = _decimal64Builder.Resize(0);
+            for (int i = 0; i < _lowScaleValues.Length; i++)
+            {
+                builder.Append(_lowScaleValues[i]);
+            }
+            return builder;
+        }
+
+        [Benchmark]
+        public Decimal256Array.Builder Decimal256_AppendDecimal_LowScale()
+        {
+            Decimal256Array.Builder builder = _decimal256LowScaleBuilder.Resize(0);
+            for (int i = 0; i < _lowScaleValues.Length; i++)
+            {
+                builder.Append(_lowScaleValues[i]);
+            }
+            return builder;
+        }
+
+        [Benchmark]
+        public Decimal256Array.Builder Decimal256_AppendDecimal_HighScale()
+        {
+            Decimal256Array.Builder builder = _decimal256HighScaleBuilder.Resize(0);
+            for (int i = 0; i < _highScaleValues.Length; i++)
+            {
+                builder.Append(_highScaleValues[i]);
+            }
+            return builder;
         }
 
         [Benchmark]

@@ -204,10 +204,10 @@ namespace Apache.Arrow.Tests
         }
 
         /// <summary>
-        /// Covers writing a <see cref="decimal"/> to a decimal128 buffer, in particular the boundaries where
-        /// the value stops fitting in 64 or 128 bits.
+        /// Covers writing a <see cref="decimal"/> to a decimal array's value buffer, in particular the
+        /// boundaries where the value stops fitting 32, 64 or 128 bits.
         /// </summary>
-        public class Decimal128Writing
+        public class Writing
         {
             private const int ByteWidth = 16;
 
@@ -245,8 +245,8 @@ namespace Apache.Arrow.Tests
             }
 
             /// <summary>
-            /// decimal256 is still written through BigInteger, so its low 16 bytes are an independent check
-            /// on what the decimal128 conversion produces.
+            /// A decimal256 holds the same two's complement value as a decimal128, sign extended, so the
+            /// two conversions have to agree over the bytes they share.
             /// </summary>
             [Theory]
             [MemberData(nameof(Values))]
@@ -262,6 +262,69 @@ namespace Apache.Arrow.Tests
 
                 Assert.Equal(narrow, wide.AsSpan(0, ByteWidth).ToArray());
                 Assert.Equal(value < 0 ? (byte)0xFF : (byte)0, wide[31]);
+            }
+
+            public static readonly TheoryData<int, int, int, string> NarrowValues = new TheoryData<int, int, int, string>
+            {
+                { 4, 9, 0, "0" },
+                { 4, 9, 0, "999999999" },
+                { 4, 9, 0, "-999999999" },
+                { 4, 9, 4, "12345.6789" },
+                { 4, 9, 4, "-12345.6789" },
+                { 4, 9, 9, "0.123456789" },
+                { 4, 9, 8, "1.5" },                 // padded out by seven digits
+                { 8, 18, 0, "999999999999999999" },
+                { 8, 18, 0, "-999999999999999999" },
+                { 8, 18, 6, "123456789012.345678" },
+                { 8, 18, 17, "1.5" },
+                { 8, 19, 0, "9223372036854775807" },   // long.MaxValue
+                { 8, 19, 0, "-9223372036854775808" },  // long.MinValue
+                { 32, 76, 0, "0" },
+                { 32, 76, 0, "79228162514264337593543950335" },
+                { 32, 76, 0, "-79228162514264337593543950335" },
+                { 32, 76, 28, "7.9228162514264337593543950335" },
+                { 32, 76, 38, "1.5" },              // padded past what a decimal128 could hold
+                { 32, 76, 38, "-1.5" },
+            };
+
+            [Theory]
+            [MemberData(nameof(NarrowValues))]
+            public void RoundTripsAtEveryWidth(int byteWidth, int precision, int scale, string text)
+            {
+                decimal value = decimal.Parse(text, NumberStyles.Number, CultureInfo.InvariantCulture);
+
+                byte[] bytes = new byte[byteWidth];
+                DecimalUtility.GetBytes(value, precision, scale, byteWidth, bytes);
+
+                Assert.Equal(value, DecimalUtility.GetDecimal(new ArrowBuffer(bytes), 0, scale, byteWidth));
+            }
+
+            [Theory]
+            [InlineData(4, "2147483648")]            // int.MaxValue + 1
+            [InlineData(4, "-2147483649")]           // int.MinValue - 1
+            [InlineData(8, "9223372036854775808")]   // long.MaxValue + 1
+            [InlineData(8, "-9223372036854775809")]  // long.MinValue - 1
+            public void ValuesTooWideForTheTypeThrow(int byteWidth, string text)
+            {
+                // The precision is deliberately generous, so that the byte width is what rejects the value.
+                // A decimal's mantissa is only 96 bits, so decimal128 can only be overflowed by padding,
+                // which PaddingBeyondOneHundredAndTwentyEightBitsThrows covers.
+                decimal value = decimal.Parse(text, NumberStyles.Number, CultureInfo.InvariantCulture);
+
+                byte[] bytes = new byte[byteWidth];
+                Assert.Throws<OverflowException>(() => DecimalUtility.GetBytes(value, 39, 0, byteWidth, bytes));
+            }
+
+            [Theory]
+            [InlineData(4)]
+            [InlineData(8)]
+            [InlineData(16)]
+            [InlineData(32)]
+            public void PrecisionIsCheckedForNegativeValuesAtEveryWidth(int byteWidth)
+            {
+                byte[] bytes = new byte[byteWidth];
+                Assert.Throws<OverflowException>(() => DecimalUtility.GetBytes(100.123m, 5, 3, byteWidth, bytes));
+                Assert.Throws<OverflowException>(() => DecimalUtility.GetBytes(-100.123m, 5, 3, byteWidth, bytes));
             }
 
             [Fact]
