@@ -38,6 +38,30 @@ namespace Apache.Arrow
 
         private static int PowersOfTenLength => s_powersOfTen.Length - 1;
 
+        // Powers of ten as BigInteger, cached so that the conversions below never recompute one per value.
+        // Covers every precision and scale a decimal256 can express (76 digits), plus a little headroom.
+        private static readonly BigInteger[] s_bigIntegerPowersOfTen = ComputeBigIntegerPowersOfTen();
+
+        private static BigInteger[] ComputeBigIntegerPowersOfTen()
+        {
+            var powers = new BigInteger[78]; // 10^0 through 10^77
+            powers[0] = BigInteger.One;
+            for (int i = 1; i < powers.Length; i++)
+            {
+                powers[i] = powers[i - 1] * 10;
+            }
+            return powers;
+        }
+
+        private static BigInteger BigIntegerPowerOfTen(int exponent)
+        {
+            BigInteger[] powers = s_bigIntegerPowersOfTen;
+
+            // An exponent outside the table is left to BigInteger.Pow, which also keeps its argument
+            // validation for the negative case.
+            return (uint)exponent < (uint)powers.Length ? powers[exponent] : BigInteger.Pow(10, exponent);
+        }
+
 #if NET7_0_OR_GREATER
         // decimal mantissa is 96 bits unsigned
         private static readonly UInt128 s_maxDecimalMantissa = new UInt128(0x0000_0000_FFFF_FFFF, 0xFFFF_FFFF_FFFF_FFFF);
@@ -205,7 +229,7 @@ namespace Apache.Arrow
 
             if (integerValue > _maxDecimal || integerValue < _minDecimal)
             {
-                BigInteger scaleBy = BigInteger.Pow(10, scale);
+                BigInteger scaleBy = BigIntegerPowerOfTen(scale);
                 BigInteger integerPart = BigInteger.DivRem(integerValue, scaleBy, out BigInteger fractionalPart);
 
                 if (integerPart > _maxDecimal || integerPart < _minDecimal)
@@ -502,12 +526,12 @@ namespace Apache.Arrow
             }
 
             // validate precision
-            if (bigInt >= BigInteger.Pow(10, precision))
+            if (bigInt >= BigIntegerPowerOfTen(precision))
                 throw new OverflowException($"Decimal precision cannot be greater than that in the Arrow vector: {value} has precision > {precision}");
 
             if (decScale < scale) // pad with trailing zeros
             {
-                bigInt *= BigInteger.Pow(10, scale - decScale);
+                bigInt *= BigIntegerPowerOfTen(scale - decScale);
             }
 
             // extract bytes from BigInteger

@@ -315,6 +315,30 @@ namespace Apache.Arrow.Tests
                 Assert.Throws<OverflowException>(() => DecimalUtility.GetBytes(value, 39, 0, byteWidth, bytes));
             }
 
+            /// <summary>
+            /// A decimal256 whose padded value needs more than 128 bits is written through BigInteger, which
+            /// is the path that reads the cached powers of ten rather than the 128-bit tables.
+            /// </summary>
+            [Theory]
+            [InlineData("1234.5678901234")]
+            [InlineData("-1234.5678901234")]
+            [InlineData("0.0000000001")]
+            [InlineData("79228162514264337593543950335")]
+            [InlineData("-79228162514264337593543950335")]
+            public void RoundTripsBeyondOneHundredAndTwentyEightBits(string text)
+            {
+                const int byteWidth = 32;
+                const int precision = 76;
+                const int scale = 38;
+
+                decimal value = decimal.Parse(text, NumberStyles.Number, CultureInfo.InvariantCulture);
+
+                byte[] bytes = new byte[byteWidth];
+                DecimalUtility.GetBytes(value, precision, scale, byteWidth, bytes);
+
+                Assert.Equal(value, DecimalUtility.GetDecimal(new ArrowBuffer(bytes), 0, scale, byteWidth));
+            }
+
             [Theory]
             [InlineData(4)]
             [InlineData(8)]
